@@ -32,6 +32,7 @@ typedef struct {
 #endif
   bj_parser parser;
   ev_io ev_watcher;
+  ev_timer ev_timeout;
 
   ServerInfo* server_info;
   int client_fd;
@@ -49,6 +50,8 @@ typedef struct {
 
 #define REQUEST_FROM_WATCHER(watcher) \
   (Request*)((size_t)watcher - (size_t)(&(((Request*)NULL)->ev_watcher)));
+#define REQUEST_FROM_TIMEOUT_WATCHER(watcher) \
+  (Request*)((size_t)watcher - (size_t)(&(((Request*)NULL)->ev_timeout)));
 
 Request* Request_new(ServerInfo*, int client_fd, const char* client_addr);
 void Request_parse(Request*, const char*, const size_t);

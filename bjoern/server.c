@@ -52,6 +52,7 @@ typedef struct {
 } ThreadInfo;
 
 typedef void ev_io_callback(struct ev_loop*, ev_io*, const int);
+typedef void ev_timer_callback(struct ev_loop*, ev_timer*, const int);
 
 #ifdef WANT_SIGINT_HANDLING
 typedef void ev_signal_callback(struct ev_loop*, ev_signal*, const int);
@@ -59,7 +60,6 @@ static ev_signal_callback ev_signal_on_sigint;
 #endif
 
 #ifdef WANT_SIGNAL_HANDLING
-typedef void ev_timer_callback(struct ev_loop*, ev_timer*, const int);
 static ev_timer_callback ev_timer_ontick;
 ev_timer timeout_watcher;
 #endif
@@ -67,6 +67,7 @@ ev_timer timeout_watcher;
 static ev_io_callback ev_io_on_request;
 static ev_io_callback ev_io_on_read;
 static ev_io_callback ev_io_on_write;
+static ev_timer_callback ev_timer_on_timeout;
 static write_state on_write_sendfile(struct ev_loop*, Request*);
 static write_state on_write_chunk(struct ev_loop*, Request*);
 static bool do_send_chunk(Request*);
@@ -181,6 +182,9 @@ ev_io_on_request(struct ev_loop* mainloop, ev_io* watcher, const int events)
   ev_io_init(&request->ev_watcher, &ev_io_on_read,
              client_fd, EV_READ);
   ev_io_start(mainloop, &request->ev_watcher);
+
+  ev_timer_init(&request->ev_timeout, &ev_timer_on_timeout, 58., 0.);
+  ev_timer_start(mainloop, &request->ev_timeout);
 }
 
 
@@ -198,6 +202,34 @@ start_writing(struct ev_loop *mainloop, Request *request)
   ev_io_init(&request->ev_watcher, &ev_io_on_write,
              request->client_fd, EV_WRITE);
   ev_io_start(mainloop, &request->ev_watcher);
+}
+
+static void
+ev_timer_on_timeout(struct ev_loop* mainloop, ev_timer* watcher, const int events)
+{
+  Request* request = REQUEST_FROM_TIMEOUT_WATCHER(watcher);
+
+  GIL_LOCK(0);
+
+  if(request->state.keep_alive) {
+    DBG_REQ(request, "server timeout occurred, keep-alive");
+    STATSD_INCREMENT("req.server_timeout.keepalive");
+    ev_io_stop(mainloop, &request->ev_watcher);
+    ev_timer_stop(mainloop, &request->ev_timeout);
+
+    Request_clean(request);
+    Request_reset(request);
+
+    // We set the timeout timer again, as we see this as a new request coming in
+    ev_timer_set(&request->ev_timeout, 58., 0.);
+    start_reading(mainloop, request);
+  } else {
+    DBG_REQ(request, "server timeout occurred, close");
+    STATSD_INCREMENT("req.server_timeout.close");
+    close_connection(mainloop, request);
+  }
+
+  GIL_UNLOCK(0);
 }
 
 static void
@@ -537,6 +569,7 @@ close_connection(struct ev_loop *mainloop, Request* request)
 {
   DBG_REQ(request, "Closing socket");
   ev_io_stop(mainloop, &request->ev_watcher);
+  ev_timer_stop(mainloop, &request->ev_timeout);
   close(request->client_fd);
   Request_free(request);
 }
